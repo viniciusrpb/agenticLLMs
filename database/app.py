@@ -1,16 +1,3 @@
-# =============================================================================
-# UnB Research Agent
-# Agente conversacional que responde perguntas sobre notícias e pesquisadores
-# da Universidade de Brasília usando RAG (Retrieval-Augmented Generation).
-#
-# Fluxo principal:
-#   1. Boot: carrega dados e constrói índice vetorial
-#   2. Usuário faz uma pergunta
-#   3. LLM classifica a intenção (notícia / pesquisador / ambos / geral)
-#   4. Busca contexto relevante (RAG + lookup por nome)
-#   5. LLM gera a resposta final com o contexto montado
-# =============================================================================
-
 import os
 import json
 import re
@@ -23,44 +10,30 @@ from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import CharacterTextSplitter
 from langchain_core.documents import Document
 
-# --- configuração da página Streamlit ---
 st.set_page_config(page_title="UnB Research Agent", layout="wide")
 st.title("🎓 UnB Research Agent")
 st.caption("Agente com conhecimento sobre notícias e pesquisadores da Universidade de Brasília")
 
-# --- cliente Groq e modelo LLM ---
-# As credenciais ficam em .streamlit/secrets.toml: GROQ_API_KEY = "gsk_..."
 client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 MODEL = "llama-3.3-70b-versatile"
 
 
-# =============================================================================
-# UTILITÁRIOS
-# =============================================================================
+# ── utilitários ──────────────────────────────────────────────
 
 def normalizar(s):
-    # Remove acentos e converte para minúsculas.
-    # Usado para comparar nomes sem se preocupar com acentuação.
     s = unicodedata.normalize("NFKD", s or "")
     s = "".join(c for c in s if not unicodedata.combining(c))
     return s.lower().strip()
 
 def limparJson(raw):
-    # Remove blocos de código markdown (```json ... ```) que o LLM às vezes
-    # adiciona ao redor do JSON, impedindo o json.loads de funcionar.
     raw = re.sub(r"```[a-z]*", "", raw).strip().strip("`")
     return raw
 
 
-# =============================================================================
-# CARREGAMENTO DE DADOS
-# =============================================================================
+# ── carregamento de dados ────────────────────────────────────
 
 @st.cache_data(show_spinner=False)
 def carregar_noticias():
-    # Lê todos os arquivos .json da pasta database/noticias/ e transforma
-    # cada item em um Document do LangChain, pronto para ser indexado.
-    # @st.cache_data garante que isso roda só uma vez por sessão.
     base_dir = os.path.join(os.path.dirname(__file__), "database", "noticias")
     documents = []
 
@@ -75,28 +48,23 @@ def carregar_noticias():
             with open(os.path.join(base_dir, filename), encoding="utf-8") as f:
                 items = json.load(f)
         except Exception:
-            continue  # arquivo corrompido: ignora e segue
+            continue
 
-        # Aceita tanto um único objeto quanto uma lista de objetos
         if isinstance(items, dict):
             items = [items]
 
         for item in items:
-            # Suporta campos em português (titulo/texto) e em inglês (title/content)
             titulo = str(item.get("titulo", item.get("title", ""))).strip()
             texto  = str(item.get("texto",  item.get("content", item.get("text", "")))).strip()
             url    = str(item.get("url", "")).strip()
             data   = str(item.get("data",   item.get("date", ""))).strip()
-
-            # Monta o texto que será indexado e buscado pelo RAG
-            text = f"Título: {titulo}\nData: {data}\n\n{texto}".strip()
+            text   = f"Título: {titulo}\nData: {data}\n\n{texto}".strip()
 
             if len(text) < 80:
-                continue  # descarta itens muito curtos (sem conteúdo útil)
+                continue
 
             documents.append(Document(
                 page_content=text,
-                # metadata permite filtrar por fonte depois da busca vetorial
                 metadata={"source": "noticia", "titulo": titulo, "url": url, "data": data},
             ))
 
@@ -105,9 +73,6 @@ def carregar_noticias():
 
 @st.cache_data(show_spinner=False)
 def carregar_lattes():
-    # Lê todos os arquivos .json da pasta database/lattes/.
-    # O formato esperado é o gerado pelo lattes.py: uma lista de dicts,
-    # onde cada dict é o currículo completo de um pesquisador.
     base_dir = os.path.join(os.path.dirname(__file__), "database", "lattes")
     pesquisadores = []
 
@@ -124,7 +89,6 @@ def carregar_lattes():
         except Exception:
             continue
 
-        # Um arquivo pode conter uma lista de pesquisadores ou um único dict
         if isinstance(data, list):
             pesquisadores.extend(data)
         elif isinstance(data, dict):
@@ -133,22 +97,15 @@ def carregar_lattes():
     return pesquisadores
 
 
-# =============================================================================
-# EXTRAÇÃO DE CAMPOS DO LATTES
-# Cada função recebe o dict de um pesquisador e devolve uma string formatada
-# para ser incluída no documento que o RAG vai indexar.
-# =============================================================================
+# ── extração de campos do Lattes ─────────────────────────────
 
 def getAreas(p):
-    # Extrai as áreas de atuação. O novo formato do lattes.py usa uma lista
-    # de dicts com subarea/area/especialidade; o formato legado usa strings.
     areas_raw = p.get("areas_atuacao", p.get("areas_pesquisa", p.get("areas", [])))
     if not areas_raw:
         return ""
     partes = []
     for a in areas_raw:
         if isinstance(a, dict):
-            # Prefere subárea > área > especialidade como label principal
             sub  = (a.get("subarea")       or "").strip().rstrip(".")
             area = (a.get("area")          or "").strip().rstrip(".")
             esp  = (a.get("especialidade") or "").strip().rstrip(".")
@@ -159,8 +116,6 @@ def getAreas(p):
                 partes.append(label)
         elif isinstance(a, str):
             partes.append(a.strip())
-
-    # Deduplica preservando a ordem de aparição
     seen = set()
     unique = []
     for x in partes:
@@ -171,7 +126,6 @@ def getAreas(p):
 
 
 def getFormacao(p):
-    # Retorna graduação + pós-graduação + pós-doutorado em formato legível.
     todos = p.get("formacao", []) + p.get("pos_doutorado", [])
     if not todos:
         return ""
@@ -192,8 +146,6 @@ def getFormacao(p):
 
 
 def get_projetos(p):
-    # Junta projetos de pesquisa, extensão e desenvolvimento numa única lista.
-    # Limita a 15 projetos para não estourar o contexto do LLM.
     projetos = (
         p.get("projetos_pesquisa", [])
         + p.get("projetos_extensao", [])
@@ -204,14 +156,14 @@ def get_projetos(p):
     linhas = []
     for proj in projetos[:15]:
         if isinstance(proj, dict):
-            titulo   = (proj.get("titulo")   or "").strip()[:120]
-            situacao = (proj.get("situacao") or "").strip()
-            periodo  = (proj.get("periodo")  or "").strip()
+            titulo   = (proj.get("titulo")    or "").strip()[:120]
+            situacao = (proj.get("situacao")  or "").strip()
+            periodo  = (proj.get("periodo")   or "").strip()
             linha = f"  • {titulo}"
             if situacao:
-                linha += f" [{situacao}]"  # ex: [Em andamento]
+                linha += f" [{situacao}]"
             if periodo:
-                linha += f" ({periodo})"   # ex: (2022 - Atual)
+                linha += f" ({periodo})"
             linhas.append(linha)
         elif isinstance(proj, str):
             linhas.append(f"  • {proj}")
@@ -219,37 +171,31 @@ def get_projetos(p):
 
 
 def getPublicacoes(p):
-    # Retorna artigos em periódicos e trabalhos em anais, ordenados do mais
-    # recente para o mais antigo. Isso garante que perguntas sobre publicações
-    # recentes encontrem o conteúdo certo mesmo com limite de tokens.
     prod    = p.get("producoes", {})
     artigos = prod.get("artigos_periodicos", [])
     anais   = prod.get("anais_completos", [])
 
-    # Fallback para formato legado que usava o campo "publicacoes"
     if not artigos and not anais:
         artigos = p.get("publicacoes", p.get("publications", []))
 
     def ano_int(pub):
-        # Converte o campo "ano" para inteiro para permitir ordenação
         try:
             return int(pub.get("ano") or 0)
         except Exception:
             return 0
 
-    # Ordena decrescente: publicações mais recentes aparecem primeiro
     artigos = sorted(artigos, key=ano_int, reverse=True)
     anais   = sorted(anais,   key=ano_int, reverse=True)
 
     linhas = []
-    for pub in artigos[:25]:   # limita a 25 artigos
+    for pub in artigos[:25]:
         if isinstance(pub, dict):
             texto = (pub.get("texto") or "").strip()
             linhas.append(f"  [artigo] {texto[:220]}")
         elif isinstance(pub, str):
             linhas.append(f"  [artigo] {pub[:220]}")
 
-    for pub in anais[:20]:     # limita a 20 anais
+    for pub in anais[:20]:
         if isinstance(pub, dict):
             texto = (pub.get("texto") or "").strip()
             linhas.append(f"  [anais]  {texto[:200]}")
@@ -260,17 +206,11 @@ def getPublicacoes(p):
 
 
 def get_orientacoes(p):
-    # Sumariza orientações por nível (mestrado, doutorado, TCC etc.).
-    # O LLM precisa saber quantas, não a lista completa.
     orient = p.get("orientacoes", {})
     if not orient:
         return ""
-
-    # Formato legado: orient é uma lista simples
     if isinstance(orient, list):
         return f"Total de orientações: {len(orient)}"
-
-    # Novo formato: orient é um dict com uma chave por nível
     mapa = {
         "dissertacao_de_mestrado":    "Mestrado",
         "tese_de_doutorado":          "Doutorado",
@@ -288,7 +228,6 @@ def get_orientacoes(p):
 
 
 def getPremios(p):
-    # Retorna os 8 prêmios mais recentes em formato de lista com bullet.
     premios = p.get("premios", [])
     if not premios:
         return ""
@@ -304,8 +243,6 @@ def getPremios(p):
 
 
 def get_stats(p):
-    # Retorna um resumo quantitativo da produção: "47 artigos, 96 anais, 64 orientações".
-    # Útil para o LLM responder perguntas do tipo "qual o professor mais produtivo?".
     prod  = p.get("producoes", {})
     n_art = len(prod.get("artigos_periodicos", p.get("publicacoes", [])))
     n_ana = len(prod.get("anais_completos", []))
@@ -325,17 +262,11 @@ def get_stats(p):
     return ", ".join(partes)
 
 
-# =============================================================================
-# CONVERSÃO LATTES → DOCUMENTOS PARA O RAG
-# =============================================================================
+# ── conversão Lattes → documentos para RAG ──────────────────
 
 def lattes_para_documentos(pesquisadores):
-    # Transforma cada perfil Lattes num Document do LangChain.
-    # O page_content é um texto estruturado com todas as informações relevantes
-    # do pesquisador — é esse texto que será fragmentado e indexado pelo FAISS.
     docs = []
     for p in pesquisadores:
-        # Campos de identificação — suporta chaves em português e inglês
         nome      = str(p.get("nome",      p.get("name",    "Desconhecido"))).strip()
         resumo    = str(p.get("resumo",    p.get("bio",     p.get("summary", "")))).strip()
         lattes_id = str(p.get("lattes_id", p.get("id_lattes", p.get("url", "")))).strip()
@@ -344,7 +275,6 @@ def lattes_para_documentos(pesquisadores):
         ultima_at = str(p.get("ultima_atualizacao", "")).strip()
         depto     = str(p.get("departamento", p.get("department", "CIC/UnB"))).strip()
 
-        # Chama as funções de extração definidas acima
         areas_txt    = getAreas(p)
         formacao_txt = getFormacao(p)
         projetos_txt = get_projetos(p)
@@ -353,8 +283,6 @@ def lattes_para_documentos(pesquisadores):
         premios_txt  = getPremios(p)
         stats_txt    = get_stats(p)
 
-        # Monta o documento como seções separadas por linha em branco.
-        # Cada seção só é incluída se tiver conteúdo (evita linhas vazias no índice).
         secoes = [f"Pesquisador: {nome}", f"Departamento: {depto}"]
         if areas_txt:    secoes.append(f"Áreas de pesquisa: {areas_txt}")
         if resumo:       secoes.append(f"Resumo: {resumo[:600]}")
@@ -370,13 +298,13 @@ def lattes_para_documentos(pesquisadores):
 
         text = "\n\n".join(secoes).strip()
         if len(text) < 30:
-            continue  # documento vazio demais: ignora
+            continue
 
         docs.append(Document(
             page_content=text,
             metadata={
-                "source":    "lattes",   # permite filtrar por fonte no RAG
-                "nome":      nome,       # usado no lookup para evitar duplicatas
+                "source":    "lattes",
+                "nome":      nome,
                 "lattes_id": lattes_id,
                 "depto":     depto,
                 "areas":     areas_txt,
@@ -385,75 +313,45 @@ def lattes_para_documentos(pesquisadores):
     return docs
 
 
-# =============================================================================
-# ÍNDICE VETORIAL (RAG)
-# =============================================================================
+# ── índice vetorial ──────────────────────────────────────────
 
 @st.cache_resource(show_spinner="Construindo índice vetorial…")
 def build_retriever():
-    # Constrói o índice FAISS com todos os documentos (notícias + Lattes).
-    # @st.cache_resource mantém o índice em memória entre requisições —
-    # sem isso, o índice seria reconstruído a cada mensagem do usuário.
-
-    # Junta documentos de notícias e perfis Lattes numa lista única
     all_docs = carregar_noticias() + lattes_para_documentos(carregar_lattes())
     if not all_docs:
         return None
-
-    # Divide documentos longos em chunks menores.
-    # chunk_size=1200: tamanho máximo de cada pedaço em caracteres
-    # chunk_overlap=200: sobreposição entre chunks consecutivos (evita perder
-    # informação que cai na fronteira entre dois chunks)
     chunks = CharacterTextSplitter(
         chunk_size=1200, chunk_overlap=200, separator="\n\n"
     ).split_documents(all_docs)
-
-    # Modelo de embeddings em português (gera vetores de 768 dimensões).
-    # Roda localmente no CPU — sem custo de API para gerar embeddings.
     embeddings = HuggingFaceEmbeddings(
         model_name="alfaneo/bertimbau-base-portuguese-sts",
         model_kwargs={"device": "cpu"},
         encode_kwargs={"normalize_embeddings": True},
     )
-
-    # Cria o índice FAISS e retorna um retriever que busca os 6 chunks
-    # mais similares à query (similaridade por cosseno nos vetores)
     return FAISS.from_documents(chunks, embedding=embeddings).as_retriever(
         search_kwargs={"k": 6}
     )
 
-# Constrói o índice no boot do app (antes da primeira pergunta),
-# para que a primeira resposta não demore mais do que as seguintes.
 build_retriever()
 
 
-# =============================================================================
-# BUSCA
-# =============================================================================
+# ── busca ────────────────────────────────────────────────────
 
 def buscar(pergunta):
-    # Faz a busca semântica no índice FAISS.
-    # Retorna os chunks cujo conteúdo é mais similar à pergunta.
     retriever = build_retriever()
     if retriever is None:
         return []
     return retriever.invoke(pergunta)
 
 
-# =============================================================================
-# LOOKUP DIRETO POR NOME DE PROFESSOR
-# =============================================================================
+# ── lookup direto por nome de professor ──────────────────────
 
 def buscarProfessor(pergunta):
-    # Estratégia complementar ao RAG: busca professores cujo nome aparece
-    # literalmente na pergunta. Resolve casos onde o RAG retorna chunks
-    # fragmentados ou não encontra o professor certo pelo nome.
     pesquisadores = carregar_lattes()
     pergunta_norm = normalizar(pergunta)
     encontrados = []
     for p in pesquisadores:
         nome_norm = normalizar(p.get("nome", ""))
-        # Considera palavras com mais de 3 letras (evita matches em "de", "da" etc.)
         partes = [w for w in nome_norm.split() if len(w) > 3]
         if any(w in pergunta_norm for w in partes):
             encontrados.append(p)
@@ -461,9 +359,6 @@ def buscarProfessor(pergunta):
 
 
 def professorParaContexto(p):
-    # Monta o contexto completo de um professor para enviar ao LLM.
-    # Diferente do documento do RAG (que é fragmentado), este é o perfil
-    # inteiro, usado quando o professor é identificado pelo lookup.
     nome       = p.get("nome", "")
     resumo     = (p.get("resumo") or "")[:600]
     areas_txt  = getAreas(p)
@@ -489,14 +384,9 @@ def professorParaContexto(p):
     return "\n\n".join(secoes)
 
 
-# =============================================================================
-# DETECÇÃO DE INTENÇÃO
-# =============================================================================
+# ── detecção de intenção ─────────────────────────────────────
 
 def detectarIntencao(pergunta):
-    # Usa o LLM para classificar a pergunta em uma de quatro categorias.
-    # Isso permite direcionar a busca para a base certa e evitar ruído.
-    # É uma chamada barata: temperatura 0 e máximo de 80 tokens.
     resp = client.chat.completions.create(
         model=MODEL,
         messages=[
@@ -514,109 +404,53 @@ def detectarIntencao(pergunta):
             },
             {"role": "user", "content": pergunta},
         ],
-        temperature=0.0,   # determinístico: mesma pergunta → mesma classificação
+        temperature=0.0,
         max_tokens=80,
     )
     try:
         return json.loads(limparJson(resp.choices[0].message.content))
     except Exception:
-        # Se o LLM não devolver JSON válido, usa "both" como fallback seguro
         return {"intent": "both", "reason": "fallback"}
 
 
-# =============================================================================
-# PIPELINE DE RESPOSTA (CHAIN OF THOUGHT LINEAR)
-#
-# Esta função orquestra todo o raciocínio do agente, exibindo cada etapa
-# em tempo real para o usuário através do st.status.
-# =============================================================================
+# ── pipeline de resposta ─────────────────────────────────────
 
-def responder(pergunta, historico, status):
-    # --- passo 1: classificar a intenção da pergunta ---
-    status.write("**Passo 1 —** classificando a pergunta…")
-    intent_data = detectarIntencao(pergunta)
-    intent      = intent_data.get("intent", "both")
-    reason      = intent_data.get("reason", "")
+def responder(pergunta, historico):
+    intent = detectarIntencao(pergunta).get("intent", "both")
 
-    # Mapeia o código interno para um label legível
-    labels = {
-        "news":       "📰 notícias",
-        "researcher": "🎓 pesquisadores",
-        "both":       "📰🎓 notícias + pesquisadores",
-        "general":    "💬 conversa geral",
-    }
-    status.write(f"↳ intenção: **{labels.get(intent, intent)}** — {reason}")
-
-    context_str = ""  # contexto que será enviado ao LLM junto com a pergunta
+    context_str = ""
 
     if intent != "general":
-
-        # --- passo 2: busca vetorial no índice FAISS ---
-        status.write("**Passo 2 —** buscando no índice vetorial (RAG)…")
         docs = buscar(pergunta)
 
-        # Filtra os resultados pela fonte correta de acordo com a intenção
         if intent == "news":
             docs = [d for d in docs if d.metadata.get("source") == "noticia"] or docs
         elif intent == "researcher":
             docs = [d for d in docs if d.metadata.get("source") == "lattes"] or docs
 
-        # Adiciona cada chunk ao contexto respeitando o limite de tamanho
         for doc in docs:
             if len(context_str) + len(doc.page_content) > 8000:
-                break  # contexto cheio: para de adicionar chunks
+                break
             src = "📰 Notícia" if doc.metadata.get("source") == "noticia" else "🎓 Pesquisador"
             context_str += f"[{src}]\n{doc.page_content}\n\n---\n\n"
 
-        status.write(f"↳ {len(docs)} trecho(s) recuperado(s) pelo RAG")
-
-        # --- passo 3: lookup direto por nome de professor ---
-        # Executa apenas se a intenção envolver pesquisadores.
-        # Complementa o RAG identificando professores pelo nome na pergunta.
         if intent in ("researcher", "both"):
-            status.write("**Passo 3 —** verificando nomes de professores na pergunta…")
             profs_diretos = buscarProfessor(pergunta)
+            nomes_lookup = {normalizar(p.get("nome", "")) for p in profs_diretos}
+            context_str = "\n\n---\n\n".join(
+                bloco for bloco in context_str.split("\n\n---\n\n")
+                if not any(n in normalizar(bloco) for n in nomes_lookup)
+            )
+            if context_str and not context_str.endswith("\n\n---\n\n"):
+                context_str += "\n\n---\n\n"
+            for prof in profs_diretos:
+                ctx = professorParaContexto(prof)
+                if len(context_str) + len(ctx) < 12000:
+                    context_str += f"[🎓 Pesquisador]\n{ctx}\n\n---\n\n"
 
-            if profs_diretos:
-                # Remove do contexto os chunks do RAG que sejam do mesmo professor —
-                # eles podem estar fragmentados e ser substituídos pelo perfil completo
-                nomes_lookup = {normalizar(p.get("nome", "")) for p in profs_diretos}
-                context_str = "\n\n---\n\n".join(
-                    bloco for bloco in context_str.split("\n\n---\n\n")
-                    if not any(n in normalizar(bloco) for n in nomes_lookup)
-                )
-                # Garante separador correto após limpeza
-                if context_str and not context_str.endswith("\n\n---\n\n"):
-                    context_str += "\n\n---\n\n"
-
-                # Adiciona o perfil completo de cada professor encontrado
-                adicionados = []
-                for prof in profs_diretos:
-                    ctx = professorParaContexto(prof)
-                    if len(context_str) + len(ctx) < 12000:
-                        context_str += f"[🎓 Pesquisador]\n{ctx}\n\n---\n\n"
-                        adicionados.append(prof.get("nome", ""))
-
-                status.write(f"↳ perfil(is) completo(s) adicionado(s): {', '.join(adicionados)}")
-            else:
-                status.write("↳ nenhum professor identificado pelo nome")
-
-        else:
-            # Passo 3 não se aplica quando a intenção é só notícias
-            status.write("**Passo 3 —** ignorado (intenção é notícias)")
-
-    else:
-        # Conversa geral: sem busca, o LLM responde diretamente
-        status.write("**Passos 2 e 3 —** ignorados (conversa geral, sem busca)")
-
-    # --- passo 4: geração da resposta pelo LLM ---
-    status.write("**Passo 4 —** gerando resposta com o LLM…")
-
-    # Monta a lista de mensagens para o LLM no formato esperado pela API Groq
     messages = [
         {
             "role": "system",
-            # Instrui o LLM sobre seu papel, bases disponíveis e regras de comportamento
             "content": (
                 "Você é um assistente especializado na Universidade de Brasília (UnB). "
                 "Responda em português brasileiro, de forma clara e objetiva.\n\n"
@@ -634,67 +468,46 @@ def responder(pergunta, historico, status):
         }
     ]
 
-    # Inclui as últimas 12 trocas do histórico para manter o contexto da conversa
     for turn in historico[-12:]:
         messages.append({"role": turn["role"], "content": turn["content"]})
 
-    # Cola o contexto recuperado antes da pergunta do usuário
     user_content = pergunta
     if context_str:
         user_content = f"Contexto:\n{context_str}\n\nPergunta: {pergunta}"
 
     messages.append({"role": "user", "content": user_content})
 
-    # Chamada principal ao LLM — gera a resposta final
     resp = client.chat.completions.create(
         model=MODEL,
         messages=messages,
-        temperature=0.3,   # um pouco de criatividade, mas ainda focado
+        temperature=0.3,
         max_tokens=800,
     )
     return resp.choices[0].message.content.strip()
 
 
-# =============================================================================
-# INTERFACE STREAMLIT
-# =============================================================================
+# ── interface Streamlit ──────────────────────────────────────
 
-# Botão para apagar o histórico e começar uma nova conversa
 if st.button("🧹 Limpar conversa"):
     st.session_state["history"] = []
     st.rerun()
 
-# Inicializa o histórico de mensagens na sessão se ainda não existir
 if "history" not in st.session_state:
     st.session_state["history"] = []
 
-# Exibe todas as mensagens anteriores da conversa
 for msg in st.session_state["history"]:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Aguarda nova mensagem do usuário
 if prompt := st.chat_input("Pergunte sobre notícias ou pesquisadores da UnB…"):
-
-    # Salva a mensagem do usuário no histórico e exibe no chat
     st.session_state["history"].append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Processa e exibe a resposta do agente
     with st.chat_message("assistant"):
-        # st.status cria uma caixa expansível que mostra o raciocínio em tempo real.
-        # expanded=True: aberta durante o processamento.
-        # Ao terminar, fecha com o label "✅ Concluído".
-        with st.status("Raciocinando…", expanded=True) as status:
-            resposta = responder(
-                prompt,
-                st.session_state["history"][:-1],  # histórico sem a pergunta atual
-                status,
-            )
-            status.update(label="✅ Concluído", state="complete", expanded=False)
+        with st.spinner("Consultando bases de conhecimento…"):
+            resposta = responder(prompt, st.session_state["history"][:-1])
         st.markdown(resposta)
 
-    # Salva a resposta no histórico e atualiza a página
     st.session_state["history"].append({"role": "assistant", "content": resposta})
     st.rerun()
