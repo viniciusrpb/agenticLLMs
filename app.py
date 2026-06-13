@@ -25,7 +25,6 @@ def normalizar(s):
     s = "".join(c for c in s if not unicodedata.combining(c))
     return s.lower().strip()
 
-
 def limparJson(raw):
     raw = re.sub(r"```[a-z]*", "", raw).strip().strip("`")
     return raw
@@ -104,7 +103,6 @@ def getAreas(p):
     areas_raw = p.get("areas_atuacao", p.get("areas_pesquisa", p.get("areas", [])))
     if not areas_raw:
         return ""
-
     partes = []
     for a in areas_raw:
         if isinstance(a, dict):
@@ -118,14 +116,12 @@ def getAreas(p):
                 partes.append(label)
         elif isinstance(a, str):
             partes.append(a.strip())
-
     seen = set()
     unique = []
     for x in partes:
         if x and x not in seen:
             seen.add(x)
             unique.append(x)
-
     return ", ".join(unique)
 
 
@@ -161,7 +157,6 @@ def get_projetos(p):
     for proj in projetos[:15]:
         if isinstance(proj, dict):
             titulo   = (proj.get("titulo")    or "").strip()[:120]
-            desc     = (proj.get("descricao") or "").strip()[:200]
             situacao = (proj.get("situacao")  or "").strip()
             periodo  = (proj.get("periodo")   or "").strip()
             linha = f"  • {titulo}"
@@ -169,8 +164,6 @@ def get_projetos(p):
                 linha += f" [{situacao}]"
             if periodo:
                 linha += f" ({periodo})"
-            if desc:
-                linha += f"\n    {desc}"
             linhas.append(linha)
         elif isinstance(proj, str):
             linhas.append(f"  • {proj}")
@@ -185,26 +178,24 @@ def getPublicacoes(p):
     if not artigos and not anais:
         artigos = p.get("publicacoes", p.get("publications", []))
 
-    linhas = []
+    def ano_int(pub):
+        try:
+            return int(pub.get("ano") or 0)
+        except Exception:
+            return 0
 
-    for pub in artigos[:20]:
+    artigos = sorted(artigos, key=ano_int, reverse=True)
+    anais   = sorted(anais,   key=ano_int, reverse=True)
+
+    linhas = []
+    for pub in artigos[:25]:
         if isinstance(pub, dict):
             texto = (pub.get("texto") or "").strip()
-            cit_s = pub.get("citacoes_scopus", pub.get("citacoes", ""))
-            cit_w = pub.get("citacoes_wos", "")
-            linha = texto[:220]
-            cits = []
-            if cit_w:
-                cits.append(f"WoS:{cit_w}")
-            if cit_s:
-                cits.append(f"Scopus:{cit_s}")
-            if cits:
-                linha += f" [{', '.join(cits)}]"
-            linhas.append(f"  [artigo] {linha}")
+            linhas.append(f"  [artigo] {texto[:220]}")
         elif isinstance(pub, str):
             linhas.append(f"  [artigo] {pub[:220]}")
 
-    for pub in anais[:15]:
+    for pub in anais[:20]:
         if isinstance(pub, dict):
             texto = (pub.get("texto") or "").strip()
             linhas.append(f"  [anais]  {texto[:200]}")
@@ -218,10 +209,8 @@ def get_orientacoes(p):
     orient = p.get("orientacoes", {})
     if not orient:
         return ""
-
     if isinstance(orient, list):
         return f"Total de orientações: {len(orient)}"
-
     mapa = {
         "dissertacao_de_mestrado":    "Mestrado",
         "tese_de_doutorado":          "Doutorado",
@@ -230,13 +219,11 @@ def get_orientacoes(p):
         "monografia_de_conclusao_de_curso_de_aperfeicoamento/especializacao": "Especialização",
         "supervisao_de_pos-doutorado": "Pós-Doutorado",
     }
-
     totais = []
     for chave, label in mapa.items():
         itens = orient.get(chave, [])
         if itens:
             totais.append(f"{label}: {len(itens)}")
-
     return "Orientações — " + ", ".join(totais) if totais else ""
 
 
@@ -279,7 +266,6 @@ def get_stats(p):
 
 def lattes_para_documentos(pesquisadores):
     docs = []
-
     for p in pesquisadores:
         nome      = str(p.get("nome",      p.get("name",    "Desconhecido"))).strip()
         resumo    = str(p.get("resumo",    p.get("bio",     p.get("summary", "")))).strip()
@@ -324,7 +310,6 @@ def lattes_para_documentos(pesquisadores):
                 "areas":     areas_txt,
             },
         ))
-
     return docs
 
 
@@ -333,14 +318,11 @@ def lattes_para_documentos(pesquisadores):
 @st.cache_resource(show_spinner="Construindo índice vetorial…")
 def build_retriever():
     all_docs = carregar_noticias() + lattes_para_documentos(carregar_lattes())
-
     if not all_docs:
         return None
-
     chunks = CharacterTextSplitter(
         chunk_size=1200, chunk_overlap=200, separator="\n\n"
     ).split_documents(all_docs)
-
     embeddings = HuggingFaceEmbeddings(
         model_name="alfaneo/bertimbau-base-portuguese-sts",
         model_kwargs={"device": "cpu"},
@@ -350,6 +332,10 @@ def build_retriever():
         search_kwargs={"k": 6}
     )
 
+build_retriever()
+
+
+# ── busca ────────────────────────────────────────────────────
 
 def buscar(pergunta):
     retriever = build_retriever()
@@ -364,13 +350,11 @@ def buscarProfessor(pergunta):
     pesquisadores = carregar_lattes()
     pergunta_norm = normalizar(pergunta)
     encontrados = []
-
     for p in pesquisadores:
         nome_norm = normalizar(p.get("nome", ""))
         partes = [w for w in nome_norm.split() if len(w) > 3]
         if any(w in pergunta_norm for w in partes):
             encontrados.append(p)
-
     return encontrados
 
 
@@ -445,23 +429,24 @@ def responder(pergunta, historico):
             docs = [d for d in docs if d.metadata.get("source") == "lattes"] or docs
 
         for doc in docs:
-            if len(context_str) + len(doc.page_content) > 5000:
+            if len(context_str) + len(doc.page_content) > 8000:
                 break
             src = "📰 Notícia" if doc.metadata.get("source") == "noticia" else "🎓 Pesquisador"
             context_str += f"[{src}]\n{doc.page_content}\n\n---\n\n"
 
         if intent in ("researcher", "both"):
             profs_diretos = buscarProfessor(pergunta)
-            nomes_rag = {
-                normalizar(doc.metadata.get("nome", ""))
-                for doc in docs
-                if doc.metadata.get("source") == "lattes"
-            }
+            nomes_lookup = {normalizar(p.get("nome", "")) for p in profs_diretos}
+            context_str = "\n\n---\n\n".join(
+                bloco for bloco in context_str.split("\n\n---\n\n")
+                if not any(n in normalizar(bloco) for n in nomes_lookup)
+            )
+            if context_str and not context_str.endswith("\n\n---\n\n"):
+                context_str += "\n\n---\n\n"
             for prof in profs_diretos:
-                if normalizar(prof.get("nome", "")) not in nomes_rag:
-                    ctx = professorParaContexto(prof)
-                    if len(context_str) + len(ctx) < 7000:
-                        context_str += f"[🎓 Pesquisador]\n{ctx}\n\n---\n\n"
+                ctx = professorParaContexto(prof)
+                if len(context_str) + len(ctx) < 12000:
+                    context_str += f"[🎓 Pesquisador]\n{ctx}\n\n---\n\n"
 
     messages = [
         {
@@ -474,10 +459,8 @@ def responder(pergunta, historico):
                 "  2. Perfis de pesquisadores com currículos Lattes\n\n"
                 "Regras:\n"
                 "- Use o contexto fornecido; não invente informações.\n"
-                "- Para perguntas sobre pesquisadores: cite nome, áreas, projetos em andamento "
-                "e publicações relevantes quando disponíveis.\n"
-                "- Para perguntas sobre áreas de pesquisa: liste os professores da área com "
-                "uma breve descrição de cada um.\n"
+                "- Para perguntas sobre pesquisadores: cite nome, áreas, projetos e publicações relevantes.\n"
+                "- Para perguntas sobre áreas de pesquisa: liste os professores da área com uma breve descrição.\n"
                 "- Para perguntas sobre notícias: cite título e data quando disponíveis.\n"
                 "- Se nada relevante for encontrado, diga brevemente e ofereça ajuda alternativa.\n"
                 "- Nunca diga 'de acordo com o contexto' — responda diretamente."
@@ -504,7 +487,7 @@ def responder(pergunta, historico):
 
 
 # ── interface Streamlit ──────────────────────────────────────
-build_retriever()
+
 if st.button("🧹 Limpar conversa"):
     st.session_state["history"] = []
     st.rerun()
