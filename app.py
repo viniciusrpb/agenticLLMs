@@ -35,7 +35,7 @@ def limparJson(raw):
 
 @st.cache_data(show_spinner=False)
 def carregar_noticias():
-    base_dir = os.path.join(os.path.dirname(__file__), "source")
+    base_dir = os.path.join(os.path.dirname(__file__), "database", "noticias")
     documents = []
 
     if not os.path.isdir(base_dir):
@@ -74,7 +74,7 @@ def carregar_noticias():
 
 @st.cache_data(show_spinner=False)
 def carregar_lattes():
-    base_dir = os.path.join(os.path.dirname(__file__), "source")
+    base_dir = os.path.join(os.path.dirname(__file__), "database", "lattes")
     pesquisadores = []
 
     if not os.path.isdir(base_dir):
@@ -330,7 +330,7 @@ def lattes_para_documentos(pesquisadores):
 
 # ── índice vetorial ──────────────────────────────────────────
 
-@st.cache_resource(show_spinner="Construindo índice vetorial...")
+@st.cache_resource(show_spinner="Construindo índice vetorial…")
 def build_retriever():
     all_docs = carregar_noticias() + lattes_para_documentos(carregar_lattes())
 
@@ -505,36 +505,9 @@ def responder(pergunta, historico):
 
 # ── interface Streamlit ──────────────────────────────────────
 
-with st.sidebar:
-    st.header("📚 Status das bases")
-    noticias    = carregar_noticias()
-    lattes_data = carregar_lattes()
-
-    st.metric("Notícias indexadas",     len(noticias))
-    st.metric("Pesquisadores (Lattes)", len(lattes_data))
-
-    if lattes_data:
-        st.markdown("**Pesquisadores carregados:**")
-        for p in lattes_data:
-            nome  = p.get("nome", "?")
-            areas = getAreas(p)
-            st.markdown(f"- **{nome}**" + (f"  \n  *{areas[:60]}*" if areas else ""))
-
-    st.markdown("---")
-    st.markdown(
-        "**Estrutura esperada:**\n"
-        "```\n"
-        "source/\n"
-        "  noticias/\n"
-        "    unb_noticias.json\n"
-        "  lattes/\n"
-        "    lattesCIC.json\n"
-        "```"
-    )
-    st.markdown("---")
-    if st.button("🧹 Limpar conversa"):
-        st.session_state["history"] = []
-        st.rerun()
+if st.button("🧹 Limpar conversa"):
+    st.session_state["history"] = []
+    st.rerun()
 
 if "history" not in st.session_state:
     st.session_state["history"] = []
