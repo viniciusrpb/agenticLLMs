@@ -504,7 +504,7 @@ def responder(pergunta, historico):
 
 
 # ── interface Streamlit ──────────────────────────────────────
-
+build_retriever()
 if st.button("🧹 Limpar conversa"):
     st.session_state["history"] = []
     st.rerun()
