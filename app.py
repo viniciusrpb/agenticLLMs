@@ -6,17 +6,15 @@ import streamlit as st
 
 st.set_page_config(page_title="UnB Agente", layout="wide")
 st.title("UnB Agente")
-st.caption("Notícias e pesquisadores da Universidade de Brasília")
+st.caption("UnB Agente")
 
 def normalizar(s):
-
     s = unicodedata.normalize("NFKD", s or "")
     s = "".join(c for c in s if not unicodedata.combining(c))
     return s.lower().strip()
 
 @st.cache_data(show_spinner=False)
 def carregar_noticias():
-
     base_dir = os.path.join(os.path.dirname(__file__), "database", "noticias")
     noticias = []
 
@@ -37,28 +35,21 @@ def carregar_noticias():
             items = [items]
 
         for item in items:
-
             titulo = str(item.get("titulo", item.get("title", ""))).strip()
-            texto = str(item.get("texto",  item.get("content", item.get("text", "")))).strip()
-            url = str(item.get("url", "")).strip()
-            data = str(item.get("data",   item.get("date", ""))).strip()
+            texto  = str(item.get("texto",  item.get("content", item.get("text", "")))).strip()
+            url    = str(item.get("url", "")).strip()
+            data   = str(item.get("data",   item.get("date", ""))).strip()
 
             if not titulo or not texto:
                 continue
 
-            noticias.append({
-                "titulo": titulo,
-                "texto":  texto,
-                "url":    url,
-                "data":   data,
-            })
+            noticias.append({"titulo": titulo, "texto": texto, "url": url, "data": data})
 
     return noticias
 
 
 @st.cache_data(show_spinner=False)
 def carregar_lattes():
-
     base_dir = os.path.join(os.path.dirname(__file__), "database", "lattes")
     pesquisadores = []
 
@@ -94,7 +85,7 @@ for msg in st.session_state["history"]:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-if prompt := st.chat_input("Pergunte..."):
+if prompt := st.chat_input("Pergunte sobre notícias ou pesquisadores da UnB..."):
     st.session_state["history"].append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
